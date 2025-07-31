@@ -71,7 +71,7 @@
     imageAspectRatio = imageHeight / imageWidth;
 
     const n = Math.pow(2, 11);
-    const tileSize = 360 / n; // tamanho do tile em graus
+    const tileSize = 360 / n; // tile size in degrees at zoom level 11
 
     const adjustedHeight = tileSize * imageAspectRatio;
 
@@ -90,7 +90,7 @@
         properties: {},
         geometry: {
           type: 'Polygon',
-          coordinates: [[...imageBounds, imageBounds[0]]], // fecha o polígono
+          coordinates: [[...imageBounds, imageBounds[0]]], // close the polygon
         }
       }
     });
@@ -123,7 +123,7 @@
 
     map.moveLayer(draggedImageId, draggedImageHitBoxId);
 
-    // Adiciona os eventos de mouse para arrastar
+    // add event listeners for dragging
     map.on('mousedown', draggedImageHitBoxId, startDragging);
     map.on('mousemove', handleDragging);
     map.on('mouseup', stopDragging);
@@ -190,18 +190,18 @@
         [imagePosition.lng, imagePosition.lat]
     ];
 
-    // Atualiza a imagem
+    // update the image
     if (map.getSource(draggedImageId)) {
       (map.getSource(draggedImageId) as any).setCoordinates(imageBounds);
     }
 
-    // Atualiza o hitbox
+    // update the hitbox
     if (map.getSource(draggedImageHitBoxId)) {
       (map.getSource(draggedImageHitBoxId) as any).setData({
         type: 'Feature',
         geometry: {
           type: 'Polygon',
-          coordinates: [[...imageBounds, imageBounds[0]]] // fecha o polígono
+          coordinates: [[...imageBounds, imageBounds[0]]] // close the polygon
         }
       });
     }
