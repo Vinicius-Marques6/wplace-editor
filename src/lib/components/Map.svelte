@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { Map, Marker } from "maplibre-gl";
+  import { Map } from "maplibre-gl";
   import "maplibre-gl/dist/maplibre-gl.css";
 
   let map: Map;
@@ -9,14 +9,54 @@
   let activeTiles = new Set<string>();
   let tileWorker: Worker;
 
+  let uploadedImageUrl: string | null = null;
   let draggedImageId = 'draggable-image';
+  let draggedImageHitBoxId = 'draggable-image-hitbox';
   let isDragging = false;
-  let dragStartPos: { x: number; y: number } | null = null;
+  let dragStartPos: maplibregl.Point | null = null;
   let imagePosition = { lng: -54.61432, lat: -20.47068 };
 
   let imageAspectRatio = 1;
   let imageWidth: number;
   let imageHeight: number;
+
+  function handleFileUpload(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+
+    const file = input.files[0];
+    if (uploadedImageUrl) {
+      URL.revokeObjectURL(uploadedImageUrl);
+    }
+    uploadedImageUrl = URL.createObjectURL(file);
+    imagePosition = map.getCenter();
+    addDraggableImage(uploadedImageUrl);
+  }
+
+  function centerOnGPS() {
+    if (!navigator.geolocation) return;
+
+    navigator.geolocation.getCurrentPosition((position) => {
+      const { latitude, longitude } = position.coords;
+      map.flyTo({ center: [longitude, latitude], zoom: 16 });
+    });
+  }
+
+  function saveMapState() {
+    const center = map.getCenter();
+    const zoom = map.getZoom();
+    const state = { lng: center.lng, lat: center.lat, zoom };
+    localStorage.setItem('mapState', JSON.stringify(state));
+  }
+
+  function loadMapState() {
+    const state = localStorage.getItem('mapState');
+    if (state) {
+      const { lng, lat, zoom } = JSON.parse(state);
+      return { lng, lat, zoom };
+    }
+    return null;
+  }
 
   async function addDraggableImage(imageUrl: string) {
     const img = new Image();
@@ -35,15 +75,40 @@
 
     const adjustedHeight = tileSize * imageAspectRatio;
 
+    const imageBounds: [[number, number], [number, number], [number, number], [number, number]] = [
+      [imagePosition.lng, imagePosition.lat + adjustedHeight], // top-left
+      [imagePosition.lng + tileSize, imagePosition.lat + adjustedHeight], // top-right
+      [imagePosition.lng + tileSize, imagePosition.lat], // bottom-right
+      [imagePosition.lng, imagePosition.lat], // bottom-left
+    ];
+
+    // Hitbox para o arrasto
+    map.addSource(draggedImageHitBoxId, {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[...imageBounds, imageBounds[0]]], // fecha o polígono
+        }
+      }
+    });
+
+    map.addLayer({
+      id: draggedImageHitBoxId,
+      type: 'fill',
+      source: draggedImageHitBoxId,
+      paint: {
+        'fill-color': '#888888',
+        'fill-opacity': 0
+      },
+    });
+
     map.addSource(draggedImageId, {
       type: 'image',
       url: imageUrl,
-      coordinates: [
-        [imagePosition.lng, imagePosition.lat + adjustedHeight], // top-left
-        [imagePosition.lng + tileSize, imagePosition.lat + adjustedHeight], // top-right
-        [imagePosition.lng + tileSize, imagePosition.lat], // bottom-right
-        [imagePosition.lng, imagePosition.lat], // bottom-left
-      ]
+      coordinates: imageBounds
     });
 
     map.addLayer({
@@ -51,15 +116,16 @@
       type: 'raster',
       source: draggedImageId,
       paint: {
-        'raster-opacity': 1,
+        'raster-opacity': 0.8,
         'raster-resampling': 'nearest'
       },
     });
 
-    map.moveLayer(draggedImageId);
+    //map.moveLayer(draggedImageId);
+    map.moveLayer(draggedImageId, draggedImageHitBoxId);
 
     // Adiciona os eventos de mouse para arrastar
-    map.on('mousedown', draggedImageId, startDragging);
+    map.on('mousedown', draggedImageHitBoxId, startDragging);
     map.on('mousemove', handleDragging);
     map.on('mouseup', stopDragging);
   }
@@ -72,6 +138,7 @@
   }
 
   function startDragging(e: any) {
+    e.preventDefault();
     isDragging = true;
     dragStartPos = e.point;
     map.getCanvas().style.cursor = 'grab';
@@ -79,7 +146,6 @@
 
   function handleDragging(e: any) {
     if (!isDragging || !dragStartPos) return;
-    console.log('Dragging:', e.point, isDragging, dragStartPos);
 
     const currentPoint = e.point;
     const startLatLng = map.unproject(dragStartPos);
@@ -106,7 +172,7 @@
     map.getCanvas().style.cursor = '';
 
     // Snap to grid
-    const zoom = 11;
+    const zoom = 60;
     const tile = lngLatToTile(imagePosition.lng, imagePosition.lat, zoom);
     const snappedPos = tileToLngLat(tile.x, tile.y, zoom);
     imagePosition = snappedPos;
@@ -114,19 +180,32 @@
   }
 
   function updateImagePosition() {
-    console.log('Updating image position:', imagePosition);
     const n = Math.pow(2, 11);
     const tileSize = 360 / n;
     const adjustedHeight = tileSize * imageAspectRatio;
 
+    const imageBounds = [
+        [imagePosition.lng, imagePosition.lat + adjustedHeight],
+        [imagePosition.lng + tileSize, imagePosition.lat + adjustedHeight],
+        [imagePosition.lng + tileSize, imagePosition.lat],
+        [imagePosition.lng, imagePosition.lat]
+    ];
+
+    // Atualiza a imagem
     if (map.getSource(draggedImageId)) {
-    (map.getSource(draggedImageId) as any).setCoordinates([
-      [imagePosition.lng, imagePosition.lat + adjustedHeight],
-      [imagePosition.lng + tileSize, imagePosition.lat + adjustedHeight],
-      [imagePosition.lng + tileSize, imagePosition.lat],
-      [imagePosition.lng, imagePosition.lat]
-    ]);
-  }
+      (map.getSource(draggedImageId) as any).setCoordinates(imageBounds);
+    }
+
+    // Atualiza o hitbox
+    if (map.getSource(draggedImageHitBoxId)) {
+      (map.getSource(draggedImageHitBoxId) as any).setData({
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[...imageBounds, imageBounds[0]]] // fecha o polígono
+        }
+      });
+    }
   }
 
   function addTileLayer(tileX: number, tileY: number, url: string) {
@@ -164,7 +243,7 @@
       layout: {
         "visibility": "visible"
       }
-    }, 'draggable-image');
+    });
 
     activeTiles.add(tileKey);
   }
@@ -254,7 +333,9 @@
       }
     };
 
-    const initialState = { lng: -54.61432, lat: -20.47068, zoom: 11 };
+    let initialState = { lng: -54.61432, lat: -20.47068, zoom: 11 };
+    const saved = loadMapState();
+    if (saved) initialState = saved;
 
     map = new Map({
       container: mapContainer,
@@ -263,10 +344,9 @@
       zoom: initialState.zoom,
     });
 
-    map.on("moveend", handleMapMove);
-
-    map.on('load', async () => {
-      await addDraggableImage('https://art.pixilart.com/6d42567b0505321.png');
+    map.on("moveend", () => {
+      saveMapState();
+      handleMapMove();
     });
   });
 
@@ -274,12 +354,17 @@
     map.off('moveend', handleMapMove);
     map.remove();
 
+    if (uploadedImageUrl) {
+      URL.revokeObjectURL(uploadedImageUrl);
+    }
+
     tileWorker?.terminate();
     activeTiles.forEach(tileKey => {
       URL.revokeObjectURL(tileKey);
     });
 
     if (map) {
+      console.log('Removing draggable image:', draggedImageId);
       map.off('mousedown', draggedImageId, startDragging);
       map.off('mousemove', handleDragging);
       map.off('mouseup', stopDragging);
@@ -292,6 +377,10 @@
   }
 </script>
 
+<div class="controls">
+  <input type="file" accept="image/*" on:change={handleFileUpload} />
+  <button on:click={centerOnGPS} style="margin-left:8px;">Centralizar no GPS</button>
+</div>
 <div class="map-wrap">
   <div class="map" bind:this={mapContainer}></div>
 </div>
@@ -311,5 +400,15 @@
 
   :global(.maplibregl-canvas-container) {
     cursor: default;
+  }
+
+  .controls {
+    position: absolute;
+    z-index: 10;
+    left: 10px;
+    top: 10px;
+    background: white;
+    padding: 4px;
+    border-radius: 4px;
   }
 </style>
