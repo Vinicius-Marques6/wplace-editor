@@ -121,7 +121,6 @@
       },
     });
 
-    //map.moveLayer(draggedImageId);
     map.moveLayer(draggedImageId, draggedImageHitBoxId);
 
     // Adiciona os eventos de mouse para arrastar
