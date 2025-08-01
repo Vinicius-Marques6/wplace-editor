@@ -207,7 +207,7 @@
     }
   }
 
-  function addTileLayer(tileX: number, tileY: number, url: string) {
+  function addTileLayer(tileX: number, tileY: number, imageUrl: string) {
     const tileKey = `${tileX}-${tileY}`;
     if (activeTiles.has(tileKey)) return;
 
@@ -222,7 +222,7 @@
 
     map.addSource(sourceId, {
       type: "image",
-      url,
+      url: imageUrl,
       coordinates: [
         [lon1, lat1],
         [lon2, lat1],
@@ -325,10 +325,9 @@
     );
 
     tileWorker.onmessage = async (e) => {
-      const { tileX, tileY, blob, success } = e.data;
+      const { tileX, tileY, imageUrl, success } = e.data;
       if (success) {
-        const objectUrl = URL.createObjectURL(blob);
-        addTileLayer(tileX, tileY, objectUrl);
+        addTileLayer(tileX, tileY, imageUrl);
       }
     };
 
@@ -358,9 +357,6 @@
     }
 
     tileWorker?.terminate();
-    activeTiles.forEach(tileKey => {
-      URL.revokeObjectURL(tileKey);
-    });
 
     if (map) {
       console.log('Removing draggable image:', draggedImageId);
@@ -377,7 +373,8 @@
 </script>
 
 <div class="controls">
-  <input type="file" accept="image/*" on:change={handleFileUpload} />
+  <!-- TODO: The image doesn't align correctly with the map tiles, so it's commented out for now -->
+  <!-- <input type="file" accept="image/*" on:change={handleFileUpload} /> -->
   <button on:click={centerOnGPS} style="margin-left:8px;">Centralizar no GPS</button>
 </div>
 <div class="map-wrap">
