@@ -9,12 +9,14 @@ self.addEventListener('message', async (e: MessageEvent<TileRequest>) => {
   const imageUrl = `/api/proxy?url=${encodeURIComponent(originalUrl)}`;
   
   try {
-    const response = await fetch(imageUrl, { method: 'HEAD'});
+    const response = await fetch(imageUrl);
+    const blob = await response.blob();
     self.postMessage({
       tileX,
       tileY,
       imageUrl,
-      success: true
+      success: true,
+      imageBlob: blob
     });
   } catch (error) {
     self.postMessage({

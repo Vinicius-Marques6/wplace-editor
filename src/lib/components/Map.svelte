@@ -1,13 +1,17 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { Map } from "maplibre-gl";
+  import { Map as MapLibre } from "maplibre-gl";
   import "maplibre-gl/dist/maplibre-gl.css";
 
-  let map: Map;
+  let map: MapLibre;
   let mapContainer: HTMLDivElement;
 
   let activeTiles = new Set<string>();
   let tileWorker: Worker;
+
+  let previousTileImage = new Map<string, Blob>();
+  let activeTileImage = new Map<string, Blob>();
+  let accumulatedDiff = new Map<string, Blob>();
 
   let uploadedImageUrl: string | null = null;
   let draggedImageId = 'draggable-image';
@@ -247,6 +251,94 @@
     activeTiles.add(tileKey);
   }
 
+  async function calculateTileDiff(tileX: number, tileY: number): Promise<Blob | null> {
+    const tileKey = `${tileX}-${tileY}`;
+    const previousImage = previousTileImage.get(tileKey);
+    const currentImage = activeTileImage.get(tileKey);
+    const accumulated = accumulatedDiff.get(tileKey);
+
+    if (!previousImage || !currentImage) {
+      console.warn(`No previous or current image for tile ${tileKey}`);
+      return null;
+    }
+
+    return Promise.all([
+      createImageBitmap(previousImage),
+      createImageBitmap(currentImage),
+      accumulated ? createImageBitmap(accumulated) : null
+    ]).then(([prevBitmap, currBitmap, accumBitmap]) => {
+      const width = Math.min(prevBitmap.width, currBitmap.width);
+      const height = Math.min(prevBitmap.height, currBitmap.height);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+
+      if (!accumBitmap) {
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, width, height);
+      } else {
+        ctx.drawImage(accumBitmap, 0, 0, width, height);
+      }
+      const baseData = ctx.getImageData(0, 0, width, height);
+
+      // Draw previous image
+      ctx.drawImage(prevBitmap, 0, 0, width, height);
+      const prevData = ctx.getImageData(0, 0, width, height);
+
+      // Draw current image
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(currBitmap, 0, 0, width, height);
+      const currData = ctx.getImageData(0, 0, width, height);
+
+      // Prepare output
+      const outData = ctx.createImageData(width, height);
+
+      for (let i = 0; i < prevData.data.length; i += 4) {
+        const isTransparent = 
+          prevData.data[i + 3] < 10 || // Alpha channel próximo de 0 na imagem anterior
+          currData.data[i + 3] < 10;   // Alpha channel próximo de 0 na imagem atual
+
+        if (isTransparent) {
+          // Se for transparente, mantém o valor base sem alteração
+          outData.data[i] = baseData.data[i];       // Red
+          outData.data[i + 1] = baseData.data[i + 1];// Green
+          outData.data[i + 2] = baseData.data[i + 2];// Blue
+          outData.data[i + 3] = 255;                 // Alpha
+          continue;
+        }
+
+
+        // Detecta mudança em qualquer canal
+        const changed =
+          prevData.data[i] !== currData.data[i] ||
+          prevData.data[i + 1] !== currData.data[i + 1] ||
+          prevData.data[i + 2] !== currData.data[i + 2];
+
+        if (changed) {
+          // Se houve mudança, copia a cor atual
+          const grayValue = Math.min(baseData.data[i] + 20, 255);
+          outData.data[i] = grayValue;        // Red
+          outData.data[i + 1] = grayValue;    // Green
+          outData.data[i + 2] = grayValue;    // Blue
+          outData.data[i + 3] = 255;          // Alpha
+        } else {
+          // Se não houve mudança, mantém a cor acumulada anterior
+          outData.data[i] = baseData.data[i];       // Red
+          outData.data[i + 1] = baseData.data[i + 1];// Green
+          outData.data[i + 2] = baseData.data[i + 2];// Blue
+          outData.data[i + 3] = 255;                 // Alpha
+        }
+      }
+
+      ctx.putImageData(outData, 0, 0);
+      return new Promise<Blob>((resolve) => {
+        canvas.toBlob((blob) => resolve(blob!), 'image/png');
+      });
+    });
+  }
+
   function removeTileLayer(tileX: number, tileY: number) {
     const tileKey = `${tileX}-${tileY}`;
     const sourceId = `tile-source-${tileKey}`;
@@ -289,6 +381,7 @@
   }
 
   function handleMapMove() {
+    console.log('Map moved, checking tiles...');
     const zoom = map.getZoom();
     if (zoom < 11) {
       Array.from(activeTiles).forEach(tileKey => {
@@ -312,9 +405,7 @@
     // Request new tiles
     visibleTiles.forEach(tile => {
       const tileKey = `${tile.x}-${tile.y}`;
-      if (!activeTiles.has(tileKey)) {
-        tileWorker.postMessage({ tileX: tile.x, tileY: tile.y });
-      }
+      tileWorker.postMessage({ tileX: tile.x, tileY: tile.y });
     });
   }
 
@@ -325,9 +416,35 @@
     );
 
     tileWorker.onmessage = async (e) => {
-      const { tileX, tileY, imageUrl, success } = e.data;
+      const { tileX, tileY, imageUrl, success, imageBlob } = e.data;
       if (success) {
-        addTileLayer(tileX, tileY, imageUrl);
+        // addTileLayer(tileX, tileY, imageUrl);
+        if (imageBlob) {
+          const tileKey = `${tileX}-${tileY}`;
+
+          removeTileLayer(tileX, tileY); // Remove any existing layer for this tile
+          
+          // Se não tem imagem anterior, usa a atual como anterior
+          if (!previousTileImage.has(tileKey)) {
+            previousTileImage.set(tileKey, imageBlob.slice(0));
+            activeTileImage.set(tileKey, imageBlob);
+          } else {
+            // Se já tem imagem anterior, atualiza normalmente
+            previousTileImage.set(tileKey, activeTileImage.get(tileKey)!);
+            activeTileImage.set(tileKey, imageBlob);
+          }
+
+          const diffBlob = await calculateTileDiff(tileX, tileY);
+          if (diffBlob) {
+            accumulatedDiff.set(tileKey, diffBlob);
+            
+            const diffUrl = URL.createObjectURL(diffBlob);
+            addTileLayer(tileX, tileY, diffUrl);
+            
+            // Limpa a URL após um tempo para evitar vazamento de memória
+            setTimeout(() => URL.revokeObjectURL(diffUrl), 1000);
+          }
+        }
       }
     };
 
@@ -335,7 +452,7 @@
     const saved = loadMapState();
     if (saved) initialState = saved;
 
-    map = new Map({
+    map = new MapLibre({
       container: mapContainer,
       style: "https://tiles.openfreemap.org/styles/liberty",
       center: [initialState.lng, initialState.lat],
@@ -346,6 +463,10 @@
       saveMapState();
       handleMapMove();
     });
+
+    setInterval(() => {
+      handleMapMove();
+    }, 5000); // Delay to ensure map is fully loaded
   });
 
   onDestroy(() => {
