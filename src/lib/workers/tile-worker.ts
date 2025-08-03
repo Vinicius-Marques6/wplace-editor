@@ -7,9 +7,7 @@ self.addEventListener('message', async (e: MessageEvent<TileRequest>) => {
   const { tileX, tileY } = e.data;
   const originalUrl = `https://backend.wplace.live/files/s0/tiles/${tileX}/${tileY}.png`;
   const imageUrl = `/api/proxy?url=${encodeURIComponent(originalUrl)}`;
-  
   try {
-    const response = await fetch(imageUrl, { method: 'HEAD'});
     self.postMessage({
       tileX,
       tileY,
